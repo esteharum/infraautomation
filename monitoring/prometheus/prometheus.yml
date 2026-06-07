@@ -1,0 +1,66 @@
+# Prometheus configuration — lks-monitoring-vpc (us-west-2 Oregon)
+# Scrapes metrics from ECS containers in lks-vpc (us-east-1 Virginia)
+# via Inter-Region VPC Peering (pcx-lks-2026)
+#
+# IMPORTANT — Inter-Region Peering Constraint:
+#   DNS resolution is NOT supported across inter-region VPC Peering.
+#   Prometheus MUST use private IP addresses directly, not DNS hostnames.
+#   After deploying ECS, get task IPs with:
+#     aws ecs describe-tasks \
+#       --cluster lks-ecs-cluster \
+#       --region us-east-1 \
+#       --tasks $(aws ecs list-tasks \
+#           --cluster lks-ecs-cluster \
+#           --region us-east-1 \
+#           --output text --query 'taskArns[]') \
+#       --query 'tasks[].attachments[].details[?name==`privateIPv4Address`].value[]' \
+#       --output text
+
+global:
+  scrape_interval:     30s   # Higher than default to account for ~70ms cross-region latency
+  scrape_timeout:      10s   # Must be less than scrape_interval
+  evaluation_interval: 30s
+  external_labels:
+    cluster:            lks-ecs-cluster
+    app_region:         us-east-1
+    monitoring_region:  us-west-2
+    peering:            inter-region-pcx-lks-2026
+
+rule_files:
+  - "rules/*.yml"
+
+scrape_configs:
+
+  # Prometheus scrapes itself (sanity check)
+  - job_name: prometheus
+    static_configs:
+      - targets: ["localhost:9090"]
+
+  # ECS API Service — exposes /metrics at port 9100
+  # Replace 10.0.3.10 with the actual private IP of the ECS API task
+  # Security Group lks-sg-ecs must allow TCP 9100 inbound from 10.1.0.0/16
+  - job_name: lks-api-service
+    metrics_path: /metrics
+    scrape_interval: 30s
+    scrape_timeout: 10s
+    static_configs:
+      - targets:
+          - "10.0.4.196:9100"   # TODO: replace with actual ECS task private IP
+        labels:
+          service:    lks-api-service
+          region:     us-east-1
+          vpc:        lks-vpc
+
+  # ECS Frontend Service — exposes /metrics at port 9100 (node-exporter sidecar)
+  # Replace 10.0.3.11 with actual private IP
+  - job_name: lks-fe-service
+    metrics_path: /metrics
+    scrape_interval: 30s
+    scrape_timeout: 10s
+    static_configs:
+      - targets:
+          - "10.0.3.97:9100"   # TODO: replace with actual ECS task private IP
+        labels:
+          service:    lks-fe-service
+          region:     us-east-1
+          vpc:        lks-vpc

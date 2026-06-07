@@ -1,0 +1,36 @@
+# Alertmanager configuration
+# Routes alerts from Prometheus to SNS / email via Amazon SNS webhook
+
+global:
+  resolve_timeout: 5m
+
+route:
+  group_by: ["alertname", "service"]
+  group_wait:      30s
+  group_interval:  5m
+  repeat_interval: 4h
+  receiver: sns-email
+
+  routes:
+    # Critical alerts go immediately, no grouping delay
+    - match:
+        severity: critical
+      receiver:       sns-email
+      group_wait:     10s
+      repeat_interval: 1h
+
+receivers:
+  - name: sns-email
+    webhook_configs:
+      # Use a simple Lambda webhook that forwards to SNS
+      # Replace with your actual webhook URL or use the SNS direct integration
+      - url: "http://localhost:9999/webhook"
+        send_resolved: true
+
+inhibit_rules:
+  # If the API service is down, suppress downstream analytics alerts
+  - source_match:
+      alertname: APIServiceDown
+    target_match_re:
+      alertname: "AnalyticsServiceDown|HighErrorRate"
+    equal: ["env"]

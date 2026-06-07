@@ -1,0 +1,76 @@
+version: "3.9"
+
+# Local development — mirrors simplified 3-hour AWS architecture
+# Usage: docker compose up -d
+
+services:
+
+  postgres:
+    image: postgres:15-alpine
+    container_name: lks-postgres-local
+    environment:
+      POSTGRES_DB:       lksdb
+      POSTGRES_USER:     lksadmin
+      POSTGRES_PASSWORD: "LKSSecure2026!"
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U lksadmin -d lksdb"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  api:
+    build: ./api
+    container_name: lks-api-local
+    ports:
+      - "8080:8080"   # Application traffic
+      - "9100:9100"   # Prometheus metrics endpoint
+    environment:
+      PORT:         "8080"
+      METRICS_PORT: "9100"
+      DB_HOST:      postgres
+      DB_PORT:      "5432"
+      DB_NAME:      lksdb
+      DB_USER:      lksadmin
+      DB_PASSWORD:  "LKSSecure2026!"
+      DB_SSL:       "false"
+      AWS_REGION:   us-east-1
+      CORS_ORIGIN:  "http://localhost:3000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  frontend:
+    build: ./frontend
+    container_name: lks-frontend-local
+    ports:
+      - "3000:3000"
+    environment:
+      API_URL: "http://localhost:8080"
+      PORT:    "3000"
+    depends_on:
+      - api
+
+  # Prometheus — run locally to test scraping against local API
+  # In production, Prometheus runs in us-west-2 and scrapes via VPC Peering
+  prometheus-local:
+    image: prom/prometheus:latest
+    container_name: lks-prometheus-local
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./monitoring/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./monitoring/prometheus/rules:/etc/prometheus/rules:ro
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.retention.time=1d"
+    depends_on:
+      - api
+    profiles:
+      - monitoring
+
+volumes:
+  postgres_data:

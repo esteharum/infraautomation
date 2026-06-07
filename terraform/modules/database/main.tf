@@ -1,0 +1,141 @@
+# ── Database, Storage & Messaging ──────────────────────────
+
+terraform {
+  required_providers {
+    aws = {
+      source  = "hashicorp/aws"
+      version = "~> 5.0"
+    }
+  }
+}
+
+resource "aws_db_parameter_group" "this" {
+  name        = "lks-pg15-params"
+  family      = "postgres15"
+  description = "LKS 2026 PostgreSQL 15 parameter group"
+
+  parameter {
+    name         = "rds.force_ssl"
+    value        = "0"
+    apply_method = "immediate"
+  }
+
+  tags = { Name = "lks-pg15-params" }
+
+  lifecycle {
+    ignore_changes        = all
+    create_before_destroy = true
+  }
+}
+
+resource "aws_db_subnet_group" "this" {
+  name       = "lks-db-subnet-group"
+  subnet_ids = var.isolated_subnet_ids
+  tags       = { Name = "lks-db-subnet-group" }
+
+  lifecycle {
+    ignore_changes = all
+  }
+}
+
+resource "aws_db_instance" "this" {
+  identifier              = "lks-rds-postgres"
+  engine                  = "postgres"
+  engine_version          = "15"
+  instance_class          = var.db_instance_class
+  allocated_storage       = 20
+  storage_type            = "gp2"
+
+  db_name  = var.db_name
+  username = var.db_username
+  password = var.db_password
+
+  db_subnet_group_name   = aws_db_subnet_group.this.name
+  parameter_group_name   = aws_db_parameter_group.this.name
+  vpc_security_group_ids = [var.security_group_id]
+  publicly_accessible    = false
+  skip_final_snapshot    = true
+  backup_retention_period = 7
+
+  tags = { Name = "lks-rds-postgres" }
+
+  lifecycle {
+    ignore_changes = [password]
+  }
+}
+
+# BUG FIX: Hapus range_key "createdAt" - soal hanya minta hash_key + TTL expiresAt
+resource "aws_dynamodb_table" "sessions" {
+  name         = var.dynamo_table
+  billing_mode = "PAY_PER_REQUEST"
+  hash_key     = "sessionId"
+
+  attribute {
+    name = "sessionId"
+    type = "S"
+  }
+
+  ttl {
+    attribute_name = "expiresAt"
+    enabled        = true
+  }
+
+  point_in_time_recovery { enabled = true }
+  tags = { Name = var.dynamo_table }
+
+  lifecycle {
+    ignore_changes = all
+  }
+}
+
+resource "aws_sqs_queue" "dlq" {
+  name = var.dlq_name
+  tags = { Name = var.dlq_name }
+
+  lifecycle {
+    ignore_changes = all
+  }
+}
+
+resource "aws_sqs_queue" "this" {
+  name                       = var.sqs_queue_name
+  visibility_timeout_seconds = 30
+
+  redrive_policy = jsonencode({
+    deadLetterTargetArn = aws_sqs_queue.dlq.arn
+    maxReceiveCount     = 3
+  })
+  tags = { Name = var.sqs_queue_name }
+
+  lifecycle {
+    ignore_changes = all
+  }
+}
+
+resource "aws_ssm_parameter" "db_host" {
+  name      = "/lks/app/db_host"
+  type      = "String"
+  value     = aws_db_instance.this.address
+  overwrite = true
+}
+
+resource "aws_ssm_parameter" "db_password" {
+  name      = "/lks/app/db_password"
+  type      = "SecureString"
+  value     = var.db_password
+  overwrite = true
+}
+
+resource "aws_ssm_parameter" "sqs_url" {
+  name      = "/lks/app/sqs_url"
+  type      = "String"
+  value     = aws_sqs_queue.this.url
+  overwrite = true
+}
+
+resource "aws_ssm_parameter" "dynamo_table" {
+  name      = "/lks/app/dynamodb_table"
+  type      = "String"
+  value     = aws_dynamodb_table.sessions.name
+  overwrite = true
+}

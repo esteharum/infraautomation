@@ -1,0 +1,28 @@
+groups:
+  - name: lks-ecs-alerts
+    rules:
+
+      # API service unreachable from Prometheus in Oregon
+      - alert: APIServiceDown
+        expr: up{job="lks-api-service"} == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "LKS API Service is unreachable from Oregon Prometheus"
+          description: >
+            Prometheus in us-west-2 cannot scrape lks-api-service.
+            Check: (1) VPC Peering pcx-lks-2026 is Active,
+            (2) route 10.1.0.0/16 exists in lks-private-rt,
+            (3) lks-sg-ecs allows TCP 9100 from 10.1.0.0/16.
+
+      # Frontend service unreachable
+      - alert: FrontendServiceDown
+        expr: up{job="lks-fe-service"} == 0
+        for: 1m
+        labels:
+          severity: warning
+        annotations:
+          summary: "LKS Frontend Service is unreachable from Oregon Prometheus"
+          description: >
+            Prometheus in us-west-2 cannot scrape lks-fe-service metrics.

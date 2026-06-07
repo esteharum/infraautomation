@@ -1,0 +1,23 @@
+# Grafana auto-provisioned datasources
+# Placed at /etc/grafana/provisioning/datasources/datasources.yml inside the container
+
+apiVersion: 1
+
+datasources:
+  # Prometheus — primary metrics source (same VPC as Grafana)
+  - name:      Prometheus
+    type:      prometheus
+    access:    proxy
+    url:       http://prometheus:9090
+    isDefault: true
+    editable:  false
+    jsonData:
+      httpMethod:     POST
+      exemplarTraceIdDestinations: []
+
+  # Loki — log aggregation (same VPC as Grafana)
+  - name:    Loki
+    type:    loki
+    access:  proxy
+    url:     http://loki:3100
+    editable: false

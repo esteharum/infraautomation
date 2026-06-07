@@ -1,0 +1,11 @@
+apiVersion: 1
+
+providers:
+  - name:            LKS Dashboards
+    orgId:           1
+    folder:          LKS 2026
+    type:            file
+    disableDeletion: false
+    editable:        true
+    options:
+      path: /etc/grafana/provisioning/dashboards

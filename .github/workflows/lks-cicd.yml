@@ -1,0 +1,198 @@
+name: LKS 2026 — CI/CD Pipeline (Python + Flask)
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+env:
+  AWS_REGION:        ${{ secrets.AWS_REGION }}
+  MONITORING_REGION: ${{ secrets.MONITORING_REGION }}
+  ECR_REGISTRY:      ${{ secrets.ECR_REGISTRY }}
+
+# ═══════════════════════════════════════════════════════════
+#  JOB 1 — install
+#  Install Python deps dan jalankan basic import tests.
+# ═══════════════════════════════════════════════════════════
+jobs:
+  install:
+    name: Install & Test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install & test API
+        working-directory: api
+        run: |
+          pip install -r requirements.txt
+          python -c "import app; print('API import OK')"
+          python -c "import db;  print('DB module OK')"
+          python -c "import metrics; print('Metrics OK')"
+
+      - name: Install & test Frontend
+        working-directory: frontend
+        run: |
+          pip install -r requirements.txt
+          python -c "import app; print('Frontend import OK')"
+
+# ═══════════════════════════════════════════════════════════
+#  JOB 2 — build_and_push_ecr
+#  Build Docker images → ECR us-east-1 (FE + API)
+#                      → ECR us-west-2 (Prometheus + Grafana)
+# ═══════════════════════════════════════════════════════════
+  build_and_push_ecr:
+    name: Build & Push to ECR
+    runs-on: ubuntu-latest
+    needs: install
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id:     ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-session-token:     ${{ secrets.AWS_SESSION_TOKEN }}
+          aws-region:            ${{ secrets.AWS_REGION }}
+
+      # ── us-east-1: Frontend & API ─────────────────────────
+      - name: Login to ECR us-east-1
+        run: |
+          aws ecr get-login-password --region us-east-1 \
+            | docker login --username AWS --password-stdin $ECR_REGISTRY
+
+      - name: Build & push — Frontend (lks-fe-app)
+        env: { IMAGE_TAG: "${{ github.sha }}" }
+        run: |
+          IMG="$ECR_REGISTRY/lks-fe-app"
+          docker build -t "$IMG:$IMAGE_TAG" -t "$IMG:latest" ./frontend
+          docker push "$IMG:$IMAGE_TAG" && docker push "$IMG:latest"
+          echo "Pushed FE: $IMG:$IMAGE_TAG"
+
+      - name: Build & push — API (lks-api-app)
+        env: { IMAGE_TAG: "${{ github.sha }}" }
+        run: |
+          IMG="$ECR_REGISTRY/lks-api-app"
+          docker build -t "$IMG:$IMAGE_TAG" -t "$IMG:latest" ./api
+          docker push "$IMG:$IMAGE_TAG" && docker push "$IMG:latest"
+          echo "Pushed API: $IMG:$IMAGE_TAG"
+
+      # ── us-west-2: Prometheus & Grafana ──────────────────
+      - name: Login to ECR us-west-2
+        run: |
+          aws ecr get-login-password --region us-west-2 \
+            | docker login --username AWS --password-stdin \
+              ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.us-west-2.amazonaws.com
+
+      - name: Build & push — Prometheus (lks-monitoring)
+        env: { IMAGE_TAG: "${{ github.sha }}" }
+        run: |
+          IMG="${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.us-west-2.amazonaws.com/lks-monitoring"
+          docker build -t "$IMG:$IMAGE_TAG" -t "$IMG:latest" ./monitoring
+          docker push "$IMG:$IMAGE_TAG" && docker push "$IMG:latest"
+          echo "Pushed Prometheus: $IMG:$IMAGE_TAG"
+
+      - name: Build & push — Grafana (lks-monitoring:grafana)
+        run: |
+          IMG="${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.us-west-2.amazonaws.com/lks-monitoring"
+          docker build -f monitoring/Dockerfile.grafana \
+            -t "$IMG:grafana" \
+            ./monitoring
+          docker push "$IMG:grafana"
+          echo "Pushed Grafana: $IMG:grafana"
+
+      - name: Save image tag
+        run: echo "${{ github.sha }}" > /tmp/image-tag.txt
+
+      - uses: actions/upload-artifact@v4
+        with: { name: image-tag, path: /tmp/image-tag.txt }
+
+# ═══════════════════════════════════════════════════════════
+#  JOB 3 — upload_to_s3
+#  Upload deployment metadata ke S3.
+# ═══════════════════════════════════════════════════════════
+  upload_to_s3:
+    name: Upload Config to S3
+    runs-on: ubuntu-latest
+    needs: build_and_push_ecr
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id:     ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-session-token:     ${{ secrets.AWS_SESSION_TOKEN }}
+          aws-region:            ${{ secrets.AWS_REGION }}
+
+      - name: Upload deployment metadata
+        run: |
+          echo "{
+            \"commit\":    \"${{ github.sha }}\",
+            \"actor\":     \"${{ github.actor }}\",
+            \"timestamp\": \"$(date -u +%Y-%m-%dT%H:%M:%SZ)\",
+            \"stack\":     \"python-flask\",
+            \"images\": {
+              \"frontend\": \"$ECR_REGISTRY/lks-fe-app:${{ github.sha }}\",
+              \"api\":      \"$ECR_REGISTRY/lks-api-app:${{ github.sha }}\",
+              \"prometheus\": \"${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.us-west-2.amazonaws.com/lks-monitoring:${{ github.sha }}\",
+              \"grafana\":    \"${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.us-west-2.amazonaws.com/lks-monitoring:grafana\"
+            }
+          }" > /tmp/meta.json
+          aws s3 cp /tmp/meta.json \
+            s3://${{ secrets.TF_STATE_BUCKET }}/deployments/${{ github.sha }}.json
+
+# ═══════════════════════════════════════════════════════════
+#  JOB 4 — deploy
+#  Terraform init → validate → plan → apply
+# ═══════════════════════════════════════════════════════════
+  deploy:
+    name: Terraform Deploy
+    runs-on: ubuntu-latest
+    needs: upload_to_s3
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id:     ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-session-token:     ${{ secrets.AWS_SESSION_TOKEN }}
+          aws-region:            ${{ secrets.AWS_REGION }}
+
+      - uses: hashicorp/setup-terraform@v3
+        with: { terraform_version: "~1.8" }
+
+      - name: Terraform Init
+        working-directory: terraform
+        run: |
+          terraform init \
+            -backend-config="bucket=${{ secrets.TF_STATE_BUCKET }}" \
+            -backend-config="key=prod/terraform.tfstate" \
+            -backend-config="region=${{ secrets.AWS_REGION }}"
+
+      - name: Terraform Validate
+        working-directory: terraform
+        run: terraform validate
+
+      - name: Terraform Plan
+        working-directory: terraform
+        run: |
+          terraform plan \
+            -var="aws_account_id=${{ secrets.AWS_ACCOUNT_ID }}" \
+            -var="student_name=${{ secrets.STUDENT_NAME }}" \
+            -var="image_tag=${{ github.sha }}"
+
+      - name: Terraform Apply
+        working-directory: terraform
+        run: |
+          terraform apply -auto-approve \
+            -var="aws_account_id=${{ secrets.AWS_ACCOUNT_ID }}" \
+            -var="student_name=${{ secrets.STUDENT_NAME }}" \
+            -var="image_tag=${{ github.sha }}"
