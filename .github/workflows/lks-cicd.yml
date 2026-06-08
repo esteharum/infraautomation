@@ -189,10 +189,10 @@ jobs:
             -var="student_name=${{ secrets.STUDENT_NAME }}" \
             -var="image_tag=${{ github.sha }}"
 
-      - name: Terraform Apply
-        working-directory: terraform
-        run: |
-          terraform apply -auto-approve \
-            -var="aws_account_id=${{ secrets.AWS_ACCOUNT_ID }}" \
-            -var="student_name=${{ secrets.STUDENT_NAME }}" \
-            -var="image_tag=${{ github.sha }}"
+      # - name: Terraform Apply
+      #   working-directory: terraform
+      #   run: |
+      #     terraform apply -auto-approve \
+      #       -var="aws_account_id=${{ secrets.AWS_ACCOUNT_ID }}" \
+      #       -var="student_name=${{ secrets.STUDENT_NAME }}" \
+      #       -var="image_tag=${{ github.sha }}"
